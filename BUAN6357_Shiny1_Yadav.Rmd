@@ -1,0 +1,248 @@
+---
+title: "BUAN6357_Shiny1_Yadav"
+author: "Mayank Mohan Yadav"
+date: "9/3/2020"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+install.packages("ggplot")
+install.packages('leaflet.extras')
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse,dplyr,leaflet, reshape, gplots, ggmap,shiny, openxlsx,DT,magrittr,rvest,readxl,maps,reshape2,ggiraph,RColorBrewer)
+```
+
+```{r}
+if(!require("data.table")) install.packages("data.table")
+library(shiny)
+library("ggplot2")
+library(leaflet)
+library(dplyr)
+library(leaflet.extras)
+library(DT)
+library(mice)
+```
+```{r}
+housing <- read.csv("Housing_2020.csv") #importing
+housing.df <- data.frame(housing) #converting to data frame
+dim(housing)
+summary(housing.df)
+```
+```{r}
+newhousing.df <- subset(housing.df, select = -c(2)) #removed SOLD.DATE
+methods(mice)
+head(newhousing.df)
+imputed.df <- mice(newhousing.df,method="pmm", maxit= 0) #no of logged events=4 i.e. 4 values imputed using mice.impute.pmm( for univariate data using predictive mean matching)
+
+final.df <- complete(imputed.df,1)
+```
+
+```{r}
+sf.df <- subset(final.df, final.df$PROPERTY.TYPE == "Single Family Residential")
+sf.df <- sf.df[,c("PROPERTY.TYPE","ZIP.OR.POSTAL.CODE","PRICE")] #selecting the required 3 columns
+sfdesc.df <- sf.df[order(sf.df$ZIP.OR.POSTAL.CODE),]
+zipsf <- as.factor(sfdesc.df$ZIP.OR.POSTAL.CODE)
+finalsf.df <- data.frame(matrix(ncol = 3))
+
+colnames(finalsf.df) <- c("Property Type", "Zip Code", "Price")
+
+for(i in levels(zipsf)){
+  temp1 <- subset(sfdesc.df, sfdesc.df$ZIP.OR.POSTAL.CODE==i)
+  temp2 <- c("Single Family Residential",i, median(temp1$PRICE))
+  finalsf.df <- rbind(finalsf.df,temp2)
+}
+finalsf.df <- finalsf.df[-c(1),] # null row-for loop
+finalsf.df$Price <- as.numeric(finalsf.df$Price)
+sfultra.df <- finalsf.df[order(-finalsf.df$Price), ] #achieved pinnacle of single family df cleaning
+
+
+th.df <- subset(final.df, final.df$PROPERTY.TYPE == "Townhouse")
+th.df <- th.df[,c("PROPERTY.TYPE","ZIP.OR.POSTAL.CODE", "PRICE")]
+thdesc.df <- th.df[order(th.df$ZIP.OR.POSTAL.CODE), ]
+zipth.df <- as.factor(thdesc.df$ZIP.OR.POSTAL.CODE)
+finalth.df <- data.frame(matrix(ncol = 3))
+
+colnames(finalth.df) <- c("Property Type", "Zip Code", "Price")
+
+
+for(i in levels(zipth.df)){
+  temp3 <- subset(thdesc.df, thdesc.df$ZIP.OR.POSTAL.CODE==i)
+  temp4 <- c("Townhouse",i, median(temp3$PRICE))
+  finalth.df <- rbind(finalth.df, temp4)
+}
+finalth.df <- finalth.df[-c(1),]
+
+```
+
+```{r}
+ui <- fluidPage(
+  titlePanel("BUAN6357_Shiny1_Yadav"),
+  tabsetPanel(
+    tabPanel("Histogram",
+             fluidRow(h3("Histogram for distribution of home prices against Zipcodes:")),
+             sidebarLayout(
+               sidebarPanel(
+                 selectInput(
+                   inputId = "Zip",
+                    label = "Select Zipcodes",
+                   choices = final.df$ZIP.OR.POSTAL.CODE,
+                   selected = final.df[1,6],
+                   multiple = TRUE),
+               sliderInput(
+                 inputId = "bins",
+                 label = "Choose the number of bins:",
+                 min=1, max=30, value = 10
+                 )
+               ),
+             mainPanel(
+               plotOutput("hist.prices")
+             )
+             )
+           ),
+    
+    tabPanel("DataTable",
+             fluidRow(h3("Median home prices by Zip code and Property type:")),
+             sidebarLayout(
+               sidebarPanel(
+                 selectInput(
+                 inputId = "Property",
+                  label = "Choose a property",
+                  choices = c("Single Family Residential"="Single Family Residential", "Townhouse"="Townhouse"))
+                 
+               ),
+               mainPanel(
+               tableOutput("table.prices")
+             )
+             )
+    ),
+    
+    tabPanel("BoxPlot",
+             fluidRow(h3("A boxplot for beds, baths, square feet, lot size, and year built:")),
+             sidebarLayout(
+               sidebarPanel(
+                    sliderInput(inputId = "beds",
+                                label = "Number of beds:",
+                                min=0, max=9, value=c(2,5)),
+
+                
+                    sliderInput(inputId = "baths",
+                                label = "Number of baths:",
+                                step = 0.5, min = 1.0, max = 10.0, value = c(3.0,4.5)),
+    
+                
+                    sliderInput(inputId = "area",
+                                label = "Area is square feet:",
+                                min=200, max=300000, value=c(5895, 150000)),
+    
+               
+                    sliderInput(inputId = "year",
+                                label = "year_built:",
+                                min=1865,
+                                max=2022,
+                                value=c(1998,2020)),
+    
+                
+                    sliderInput(inputId = "lot",
+                                label = "lot_size:",
+                                min=50, max=1000000, value=c(9585,85000))
+                
+               ),
+               
+                mainPanel(
+               plotOutput("plot.boxplot")
+                )
+             )
+                ),
+               
+        tabPanel("Map",
+                 fluidRow( h3("A map that shows the location of the home:")),
+             leafletOutput("Map")
+             )
+             )
+             )
+
+#server function
+server <- function(input,output){
+  
+  output$hist.prices <- renderPlot({
+  
+      
+ cost.df <- subset(final.df, final.df$ZIP.OR.POSTAL.CODE == input$Zip)
+    ggplot(cost.df, aes(x=cost.df$PRICE)) +
+    geom_histogram(bins =input$bins, color="red", fill="gray") + 
+    labs(title="Distribution of Home Prices with respect to Zip Code(s)",x="Prices", y = "Frequency")
+    
+    
+  }
+    
+  )
+  
+  
+  output$table.prices <- renderTable({
+    if(input$Property=="Single Family Residential"){
+      median_price <- sfultra.df
+    }else{
+      median_price <- finalth.df
+    }
+  }
+    
+  )
+  
+  output$plot.boxplot <- renderPlot({
+    
+      beds.min <- input$beds[1]
+      beds.max <- input$beds[2]
+      baths.min <- input$baths[1]
+      baths.max <- input$baths[2]
+      area.min  <- input$area[1]
+      area.max  <- input$area[2]
+      year.min  <- input$year[1]
+      year.max  <- input$year[2]
+      lot.min <- input$lot[1]
+      lot.max <- input$lot[2]
+     
+      tempo <- final.df[(final.df$BEDS >= beds.min & final.df$BEDS <= beds.max),]
+      tempo <- tempo[(tempo$BATHS >= baths.min & tempo$BATHS <= baths.max),]
+      tempo <- tempo[(tempo$SQUARE.FEET >= area.min & tempo$SQUARE.FEET <= area.max),]
+      tempo <- tempo[(tempo$YEAR.BUILT >= year.min & tempo$YEAR.BUILT <= year.max),]
+      tempo = tempo[(tempo$LOT.SIZE >= lot.min & tempo$LOT.SIZE <= lot.max),]
+  
+    
+      
+    
+boxplot(tempo$PRICE, xlab='', ylab='price', main="Distribution of Home prices for selection")
+  })
+  
+  output$Map <- renderLeaflet({
+    features <- sprintf("<strong>%s</strong></br>Bedrooms: %g 
+                      <br/>Bathrooms: %g</br>Sq_feet: %g
+                      </br>Lot_Size: %g </br>Year Built: %g
+                      </br>Price: %g",
+                      final.df$ADDRESS,
+                      final.df$SQUARE.FEET,
+                      final.df$LOT.SIZE,
+                      final.df$BEDS,
+                      final.df$BATHS,
+                      final.df$YEAR.BUILT,
+                      final.df$PRICE) %>% 
+  lapply(htmltools::HTML)
+    leaflet(final.df) %>%
+      setView(lat = 32.87, lng= -96.56, zoom = 10) %>%
+      addTiles() %>%
+      addCircleMarkers(lat = final.df$LATITUDE,
+                       lng = final.df$LONGITUDE, 
+                       label = features, 
+                       color = 'blue')
+    
+  })
+  
+}
+
+
+shinyApp(ui=ui, server = server)```
